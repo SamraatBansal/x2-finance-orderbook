@@ -74,32 +74,30 @@ module vault::deposit_core {
         // make sure we have enough money to deposit!
         assert!(coin::value<T>(sui_wallet) >= sui_amount, ENotEnoughMoney);
 
-        // get balance reference
-        let wallet_balance = coin::balance_mut(sui_wallet);
+        let vec_len = vector::length<OrderObject<T>>(&pool.sell_orders_list);
 
-        // get money from balance
-        let payment = balance::split(wallet_balance, sui_amount);
-        // let pool_buy_orders_list = vector::borrow_mut(&mut pool.) 
-        // add to pool's balance.
-        balance::join<T>(&mut pool.sui_balance, payment);
-
-
-        if (vector::length<OrderObject<T>>(&pool.sell_orders_list) > 0 && vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price <= ask_price) {
+        if (vec_len > 0 && vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price <= ask_price) {
             let availableCoins = pool_token_balance(pool);
             assert!(availableCoins > sui_amount/vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price, ENotEnoughMoney);
 
-            let balance = coin::balance_mut(token_wallet);
+            let wallet_balance = coin::split(sui_wallet, sui_amount, ctx);
+            transfer::public_transfer(wallet_balance, vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).order_owner);
 
-            // split money from vault's balance.
-            let payment = balance::split(&mut pool.token_balance, sui_amount/vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price);
-            balance::join<U>(balance, payment);
-
-            let sui_payment = balance::split(&mut pool.sui_balance, sui_amount);
-            balance::join(&mut vector::borrow_mut<OrderObject<T>>(&mut pool.sell_orders_list, 0).receiver_balance, sui_payment);
-            // execute the transaction
+            // split money from vault's token balance.
+            let token_balance = coin::balance_mut(token_wallet);
+            let token_payment = balance::split(&mut pool.token_balance, sui_amount/vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price);
+            balance::join<U>(token_balance, token_payment);
         } else {
-            let order_object = create_order_object(ask_price, ctx);
-            vector::push_back<OrderObject<U>>(&mut pool.buy_orders_list, order_object);
+            // get balance reference
+            let wallet_balance = coin::balance_mut(sui_wallet);
+
+            // get money from balance
+            let payment = balance::split(wallet_balance, sui_amount);
+
+            // add to pool's balance.
+            balance::join<T>(&mut pool.sui_balance, payment);
+            let vec_len = vector::length<OrderObject<U>>(&pool.buy_orders_list);
+            insert_buy_order_object(pool, ask_price, vec_len, ctx);
         }
     }
 
@@ -108,30 +106,30 @@ module vault::deposit_core {
         // make sure we have enough money to deposit!
         assert!(coin::value<U>(token_wallet) >= token_amount, ENotEnoughMoney);
         // get balance reference
-        let wallet_balance = coin::balance_mut(token_wallet);
 
-        // get money from balance
-        let payment = balance::split(wallet_balance, token_amount);
-        balance::join<U>(&mut pool.token_balance, payment);
-
-        if (vector::length<OrderObject<U>>(&pool.buy_orders_list) > 0 && vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price >= ask_price) {
+        let vec_len = vector::length<OrderObject<U>>(&pool.buy_orders_list);
+        if (vec_len > 0 && vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price >= ask_price) {
             let availableCoins = pool_sui_balance(pool);
-            assert!(availableCoins > token_amount * vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price, ENotEnoughMoney);
+            assert!(availableCoins >= token_amount * vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price, ENotEnoughMoney);
 
-            let balance = coin::balance_mut(sui_wallet);
-
-            // split money from vault's balance.
+            let wallet_balance = coin::balance_mut(sui_wallet);
             let payment = balance::split(&mut pool.sui_balance, token_amount * vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price);
-            // execute the transaction
-            balance::join(balance, payment);
+            balance::join(wallet_balance, payment);
 
+            let coin_object = coin::split(token_wallet, token_amount, ctx);
+            transfer::public_transfer(coin_object, vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).order_owner);
 
             let token_payment = balance::split(&mut pool.token_balance, token_amount);
             balance::join(&mut vector::borrow_mut<OrderObject<U>>(&mut pool.buy_orders_list, 0).receiver_balance, token_payment);
 
         } else {
-            let order_object = create_order_object(ask_price, ctx);
-            vector::push_back<OrderObject<T>>(&mut pool.sell_orders_list, order_object);
+            let token_balance = coin::balance_mut(token_wallet);
+            // get money from balance
+            let token_payment = balance::split(token_balance, token_amount);
+            balance::join<U>(&mut pool.token_balance, token_payment);
+
+            let vec_len = vector::length<OrderObject<T>>(&pool.sell_orders_list);
+            insert_sell_order_object(pool, ask_price, vec_len, ctx);
         }
 
 
@@ -139,35 +137,43 @@ module vault::deposit_core {
         // add to pool's balance.
     }
 
+    fun insert_buy_order_object<T, U>(pool: &mut Pool<T, U>, ask_price: u64, vec_len:u64, ctx: &mut TxContext) {
 
-    /* A function for admins to deposit money to the pool so it can still function!  */
-    // public entry fun depositToOrderObject(_:&PoolOwnership, pool :&mut OrderObject<T>, amount: u64, payment: &mut Coin<SUI>){
+        let order_object = create_order_object(ask_price, ctx);
+        vector::push_back<OrderObject<U>>(&mut pool.buy_orders_list, order_object);
 
-    //     let availableCoins = coin::value(payment);
-    //     assert!(availableCoins > amount, ENotEnoughMoney);
+        if (vec_len>0){
+            let last = vec_len;
+            let second_last = vec_len -1 ;
+            while (second_last >= 0) {
+                if (vector::borrow<OrderObject<U>>(&pool.buy_orders_list, last).ask_price > vector::borrow<OrderObject<U>>(&pool.buy_orders_list, second_last).ask_price) {
+                    vector::swap<OrderObject<U>>(&mut pool.buy_orders_list, last, second_last);
+                    
+                    last = second_last;
+                    second_last = second_last - 1;
+                }else{break}
+            }
+        }
+    } 
 
-    //     let balance = coin::balance_mut(payment);
+    fun insert_sell_order_object<T, U>(pool: &mut Pool<T, U>, ask_price: u64, vec_len:u64, ctx: &mut TxContext) {
 
-    //     let payment = balance::split(balance, amount);
-    //     balance::join(&mut pool.pool_balance, payment);
-    // }
+        let order_object = create_order_object(ask_price, ctx);
+        vector::push_back<OrderObject<T>>(&mut pool.sell_orders_list, order_object);
 
-    /*
-       A function for admins to get their profits.
-    */
-    // public entry fun withdraw(_:&PoolOwnership, pool: &mut OrderObject<T>, amount: u64, wallet: &mut Coin<SUI>){
-
-    //     let availableCoins = pool_balance(pool);
-    //     assert!(availableCoins > amount, ENotEnoughMoney);
-
-    //     let balance = coin::balance_mut(wallet);
-
-    //     // split money from pool's balance.
-    //     let payment = balance::split(&mut pool.pool_balance, amount);
-
-    //     // execute the transaction
-    //     balance::join(balance, payment);
-    // }
+        if (vec_len>0){
+            let last = vec_len;
+            let second_last = vec_len -1 ;
+            while (second_last >= 0) {
+                if (vector::borrow<OrderObject<T>>(&pool.sell_orders_list, last).ask_price < vector::borrow<OrderObject<T>>(&pool.sell_orders_list, second_last).ask_price) {
+                    vector::swap<OrderObject<T>>(&mut pool.sell_orders_list, last, second_last);
+                    
+                    last = second_last;
+                    second_last = second_last - 1;
+                }else{break}
+            }
+        }
+    } 
 
     #[test_only]
     public fun init_for_testing(ctx: &mut TxContext) {
