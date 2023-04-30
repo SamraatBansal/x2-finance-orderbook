@@ -14,17 +14,18 @@ module vault::deposit_core {
     const ENotEnoughMoney: u64 = 1;
     const EOutOfService: u64 = 2;
 
-    struct Pool<phantom T> has key, store {
+    struct Pool<phantom T, phantom U> has key, store {
         id: UID,
-        token_balance: Balance<T>,
         sui_balance: Balance<T>,
-        buy_orders_list: vector<OrderObject>,
-        sell_orders_list: vector<OrderObject>,
+        token_balance: Balance<U>,
+        buy_orders_list: vector<OrderObject<U>>,
+        sell_orders_list: vector<OrderObject<T>>,
     }
 
-    struct OrderObject has store {
+    struct OrderObject<phantom T> has store {
         id: UID,
         order_owner: address,
+        receiver_balance: Balance<T>,
         ask_price: u64,
     }
 
@@ -37,20 +38,21 @@ module vault::deposit_core {
         transfer::transfer(PoolOwnership{id: object::new(ctx)}, tx_context::sender(ctx));
     }
 
-    public entry fun create_pool<T>(_:&PoolOwnership, ctx: &mut TxContext){
-        transfer::share_object(Pool<T>{
+    public entry fun create_pool<T, U>(_:&PoolOwnership, ctx: &mut TxContext){
+        transfer::share_object(Pool<T, U>{
             id: object::new(ctx),
             token_balance: balance::zero(),
             sui_balance: balance::zero(),
-            buy_orders_list: vector::empty<OrderObject>(),
-            sell_orders_list: vector::empty<OrderObject>()
+            buy_orders_list: vector::empty<OrderObject<U>>(),
+            sell_orders_list: vector::empty<OrderObject<T>>()
         });
     }
 
-    public fun create_order_object(ask_price: u64, ctx: &mut TxContext):OrderObject{
+    public fun create_order_object<T>(ask_price: u64, ctx: &mut TxContext):OrderObject<T>{
         OrderObject{
             id: object::new(ctx),
             order_owner: tx_context::sender(ctx),
+            receiver_balance: balance::zero(),
             ask_price,
         }
     }
@@ -59,42 +61,82 @@ module vault::deposit_core {
     //     self.min_deposit
     // }
 
-    // public fun pool_balance<T>(self:  &OrderObject<T>): u64{
-    //    balance::value<T>(&self.pool_balance)
-    // }
+    public fun pool_token_balance<T, U>(self:  &Pool<T, U>): u64{
+       balance::value<U>(&self.token_balance)
+    }
 
-    public entry fun create_buy_order<T>(pool: &mut Pool<T>, wallet: &mut Coin<T>, sui_amount: u64, ask_price: u64, ctx: &mut TxContext){
+    public fun pool_sui_balance<T, U>(self:  &Pool<T, U>): u64{
+       balance::value<T>(&self.sui_balance)
+    }
+
+    public entry fun create_buy_order<T, U>(pool: &mut Pool<T, U>, sui_wallet: &mut Coin<T>, token_wallet: &mut Coin<U>,sui_amount: u64, ask_price: u64, ctx: &mut TxContext){
 
         // make sure we have enough money to deposit!
-        assert!(coin::value(wallet) >= sui_amount, ENotEnoughMoney);
-        let order_object = create_order_object(ask_price, ctx);
+        assert!(coin::value<T>(sui_wallet) >= sui_amount, ENotEnoughMoney);
+
         // get balance reference
-        let wallet_balance = coin::balance_mut(wallet);
+        let wallet_balance = coin::balance_mut(sui_wallet);
 
         // get money from balance
         let payment = balance::split(wallet_balance, sui_amount);
-        vector::push_back<OrderObject>(&mut pool.buy_orders_list, order_object);
-
         // let pool_buy_orders_list = vector::borrow_mut(&mut pool.) 
         // add to pool's balance.
         balance::join<T>(&mut pool.sui_balance, payment);
+
+
+        if (vector::length<OrderObject<T>>(&pool.sell_orders_list) > 0 && vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price <= ask_price) {
+            let availableCoins = pool_token_balance(pool);
+            assert!(availableCoins > sui_amount/vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price, ENotEnoughMoney);
+
+            let balance = coin::balance_mut(token_wallet);
+
+            // split money from vault's balance.
+            let payment = balance::split(&mut pool.token_balance, sui_amount/vector::borrow<OrderObject<T>>(&pool.sell_orders_list, 0).ask_price);
+            balance::join<U>(balance, payment);
+
+            let sui_payment = balance::split(&mut pool.sui_balance, sui_amount);
+            balance::join(&mut vector::borrow_mut<OrderObject<T>>(&mut pool.sell_orders_list, 0).receiver_balance, sui_payment);
+            // execute the transaction
+        } else {
+            let order_object = create_order_object(ask_price, ctx);
+            vector::push_back<OrderObject<U>>(&mut pool.buy_orders_list, order_object);
+        }
     }
 
-    public entry fun create_sell_order<T>(pool: &mut Pool<T>, wallet: &mut Coin<T>, token_amount: u64, ask_price: u64, ctx: &mut TxContext){
+    public entry fun create_sell_order<T, U>(pool: &mut Pool<T, U>, sui_wallet: &mut Coin<T>, token_wallet: &mut Coin<U>, token_amount: u64, ask_price: u64, ctx: &mut TxContext){
 
         // make sure we have enough money to deposit!
-        assert!(coin::value(wallet) >= token_amount, ENotEnoughMoney);
-        let order_object = create_order_object(ask_price, ctx);
+        assert!(coin::value<U>(token_wallet) >= token_amount, ENotEnoughMoney);
         // get balance reference
-        let wallet_balance = coin::balance_mut(wallet);
+        let wallet_balance = coin::balance_mut(token_wallet);
 
         // get money from balance
         let payment = balance::split(wallet_balance, token_amount);
-        vector::push_back<OrderObject>(&mut pool.sell_orders_list, order_object);
+        balance::join<U>(&mut pool.token_balance, payment);
+
+        if (vector::length<OrderObject<U>>(&pool.buy_orders_list) > 0 && vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price >= ask_price) {
+            let availableCoins = pool_sui_balance(pool);
+            assert!(availableCoins > token_amount * vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price, ENotEnoughMoney);
+
+            let balance = coin::balance_mut(sui_wallet);
+
+            // split money from vault's balance.
+            let payment = balance::split(&mut pool.sui_balance, token_amount * vector::borrow<OrderObject<U>>(&pool.buy_orders_list, 0).ask_price);
+            // execute the transaction
+            balance::join(balance, payment);
+
+
+            let token_payment = balance::split(&mut pool.token_balance, token_amount);
+            balance::join(&mut vector::borrow_mut<OrderObject<U>>(&mut pool.buy_orders_list, 0).receiver_balance, token_payment);
+
+        } else {
+            let order_object = create_order_object(ask_price, ctx);
+            vector::push_back<OrderObject<T>>(&mut pool.sell_orders_list, order_object);
+        }
+
 
         // let pool_buy_orders_list = vector::borrow_mut(&mut pool.) 
         // add to pool's balance.
-        balance::join<T>(&mut pool.token_balance, payment);
     }
 
 
