@@ -1,4 +1,4 @@
-module vault::deposit_core {
+module x2::orderbook {
     // Part 1: imports
     use sui::object::{Self, UID};
     use sui::transfer;
