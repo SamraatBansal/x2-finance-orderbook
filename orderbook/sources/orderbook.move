@@ -4,7 +4,6 @@ module x2::orderbook {
     use sui::transfer;
     use sui::balance::{Self, Balance};
     use sui::tx_context::{Self, TxContext};
-    // Use this dependency to get a type wrapper for UTF-8 strings
     use sui::coin::{Self, Coin};
     use std::vector;
 
@@ -229,8 +228,147 @@ module x2::orderbook {
         }
     }
 
+
     #[test_only]
-    public fun init_for_testing(ctx: &mut TxContext) {
-        init(ctx);
+    // Test Coin
+    struct MANAGED has drop {}
+
+    #[test]
+    fun test_orderbook() {
+        use sui::test_scenario::{Self};
+        use sui::sui::SUI;
+        use std::debug;
+
+        // Dummy account addresses
+        let admin = @0xBABE;
+        let buyer = @0xFACE;
+        let seller = @0xCAFE;
+
+        let scenario_val = test_scenario::begin(admin);
+        let scenario = &mut scenario_val;
+        {
+            init(test_scenario::ctx(scenario));
+        };
+
+        //Create Pool
+        test_scenario::next_tx(scenario, admin);
+        {
+            let pool_ownership = test_scenario::take_from_sender<PoolOwnership>(scenario);
+            create_pool<SUI, MANAGED>(&pool_ownership, test_scenario::ctx(scenario));
+
+            //Since we cannot drop pool_ownership just like that
+            test_scenario::return_to_sender(scenario, pool_ownership);
+        };
+        //Add a Buy in orderbook
+        test_scenario::next_tx(scenario, buyer);
+        {
+            //Get the current latest shared pool in the scenario
+            let pool = test_scenario::take_shared<Pool<SUI, MANAGED>>(scenario);
+            debug::print(&pool);
+
+            //Mint some test coin wallets
+            let wallet = coin::mint_for_testing<SUI>(1000, test_scenario::ctx(scenario));
+            let wallet2 = coin::mint_for_testing<MANAGED>(0, test_scenario::ctx(scenario));
+
+            // Sui amount -> 10, Bid Price -> 2
+            create_buy_order(&mut pool, &mut wallet, &mut wallet2, 10, 2, test_scenario::ctx(scenario));
+
+            assert!(vector::borrow<OrderObject<MANAGED>>(&pool.buy_orders_list, 0).price == 2 &&
+               vector::length<OrderObject<MANAGED>>(&pool.buy_orders_list) == 1 , 1);
+            
+            //Drop the wallets
+            let dummy_address = @0xCAFE;
+            transfer::public_transfer(wallet, dummy_address);
+            transfer::public_transfer(wallet2, dummy_address);
+
+            //Return the shared object
+            test_scenario::return_shared(pool);
+        };
+        // Add sell for the previous buy and create multiple sells on top of that
+        test_scenario::next_tx(scenario, seller);
+        {
+            //Get the current latest shared pool in the scenario
+            let pool = test_scenario::take_shared<Pool<SUI, MANAGED>>(scenario);
+            debug::print(&pool);
+
+            //Mint some test coin wallets
+            let wallet = coin::mint_for_testing<SUI>(0, test_scenario::ctx(scenario));
+            let wallet2 = coin::mint_for_testing<MANAGED>(30, test_scenario::ctx(scenario));
+
+            //Sell 5 `MANAGED` tokens for Ask_price -> 2
+            create_sell_order(&mut pool, &mut wallet, &mut wallet2, 5, 2, test_scenario::ctx(scenario));
+
+            //Since the sell will be matched no orders will be left
+            assert!(vector::length<OrderObject<SUI>>(&pool.sell_orders_list) == 0 &&
+             vector::length<OrderObject<MANAGED>>(&pool.buy_orders_list) == 0 , 1);
+            
+            //Create another sell order
+            create_sell_order(&mut pool, &mut wallet, &mut wallet2, 15, 3, test_scenario::ctx(scenario));
+            create_sell_order(&mut pool, &mut wallet, &mut wallet2, 10, 5, test_scenario::ctx(scenario));
+
+            //Drop the wallets
+            let dummy_address = @0xCAFE;
+            transfer::public_transfer(wallet, dummy_address);
+            transfer::public_transfer(wallet2, dummy_address);
+
+            //Return the shared object
+            debug::print(&pool);
+            test_scenario::return_shared(pool);
+        };
+        //Match the buy with higher BidPrice than AskPrice and initate Buy of more than total Sell Value
+        test_scenario::next_tx(scenario, buyer);
+        {
+            //Get the current latest shared pool in the scenario
+            let pool = test_scenario::take_shared<Pool<SUI, MANAGED>>(scenario);
+            debug::print(&pool);
+
+            //Mint some test coin wallets
+            let wallet = coin::mint_for_testing<SUI>(1000, test_scenario::ctx(scenario));
+            let wallet2 = coin::mint_for_testing<MANAGED>(0, test_scenario::ctx(scenario));
+
+            //Buy for 100 SUI at Bid Price of 5
+            create_buy_order(&mut pool, &mut wallet, &mut wallet2, 100, 5, test_scenario::ctx(scenario));
+
+            //amount_escrowed will be 5 as 2 sell orders will be executed and take 45, 50 sui respectively 
+            // and a buy order of sui amount 5 will be left at bid price of 5s
+            assert!(vector::borrow<OrderObject<MANAGED>>(&pool.buy_orders_list, 0).amount_escrowed == 5 &&
+               vector::length<OrderObject<SUI>>(&pool.sell_orders_list) == 0 , 1);
+            
+            //Drop the wallets
+            let dummy_address = @0xCAFE;
+            transfer::public_transfer(wallet, dummy_address);
+            transfer::public_transfer(wallet2, dummy_address);
+
+            //Return the shared object
+            test_scenario::return_shared(pool);
+        };
+        // Match the only open buy with sell
+        test_scenario::next_tx(scenario, seller);
+        {
+            //Get the current latest shared pool in the scenario
+            let pool = test_scenario::take_shared<Pool<SUI, MANAGED>>(scenario);
+            debug::print(&pool);
+
+            //Mint some test coin wallets
+            let wallet = coin::mint_for_testing<SUI>(0, test_scenario::ctx(scenario));
+            let wallet2 = coin::mint_for_testing<MANAGED>(1, test_scenario::ctx(scenario));
+
+            // Sell 1 token for 5 SUI
+            create_sell_order(&mut pool, &mut wallet, &mut wallet2, 1, 5, test_scenario::ctx(scenario));
+
+            //Since the sell will be matched no orders will be left
+            assert!(vector::length<OrderObject<SUI>>(&pool.sell_orders_list) == 0 &&
+             vector::length<OrderObject<MANAGED>>(&pool.buy_orders_list) == 0 , 1);
+
+            //Drop the wallets
+            let dummy_address = @0xCAFE;
+            transfer::public_transfer(wallet, dummy_address);
+            transfer::public_transfer(wallet2, dummy_address);
+
+            //Return the shared object
+            debug::print(&pool);
+            test_scenario::return_shared(pool);
+        };
+        test_scenario::end(scenario_val);
     }
 }
