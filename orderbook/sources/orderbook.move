@@ -98,13 +98,13 @@ module vault::deposit_core {
             let remainder_token_balance = order_object.amount_escrowed - transaction_asset_value;
             debug::print(&remainder_buy_balance);
             debug::print(&remainder_token_balance);
-            if (remainder_buy_balance > 0) {
-                create_buy_order(pool, sui_wallet, token_wallet, remainder_buy_balance, bid_price, ctx);
-            };
             if (remainder_token_balance > 0) {
                 vector::borrow_mut<OrderObject<T>>(&mut pool.sell_orders_list, 0).amount_escrowed = remainder_token_balance;
             } else {
                 vector::remove<OrderObject<T>>(&mut pool.sell_orders_list, 0);
+            };
+            if (remainder_buy_balance > 0) {
+                create_buy_order(pool, sui_wallet, token_wallet, remainder_buy_balance, bid_price, ctx);
             }
         } else {
             // get balance reference
@@ -115,8 +115,7 @@ module vault::deposit_core {
 
             // add to pool's balance.
             balance::join<T>(&mut pool.sui_balance, payment);
-            let vec_len = vector::length<OrderObject<U>>(&pool.buy_orders_list);
-            insert_buy_order_object(pool, bid_price, sui_amount,vec_len, ctx);
+            insert_buy_order_object(pool, bid_price, sui_amount, ctx);
         }
     }
 
@@ -147,13 +146,13 @@ module vault::deposit_core {
             let remainder_buy_balance = order_object.amount_escrowed - transaction_token_value;
             let remainder_token_balance = token_amount - transaction_asset_value;
 
-            if (remainder_token_balance > 0) {
-                create_sell_order(pool, sui_wallet, token_wallet, remainder_token_balance, ask_price, ctx);
-            };
             if (remainder_buy_balance > 0) {
                 vector::borrow_mut<OrderObject<U>>(&mut pool.buy_orders_list, 0).amount_escrowed = remainder_buy_balance;
             } else {
                vector::remove<OrderObject<U>>(&mut pool.buy_orders_list, 0);
+            };
+            if (remainder_token_balance > 0) {
+                create_sell_order(pool, sui_wallet, token_wallet, remainder_token_balance, ask_price, ctx);
             }
         } else {
             let token_balance = coin::balance_mut(token_wallet);
@@ -161,8 +160,8 @@ module vault::deposit_core {
             let token_payment = balance::split(token_balance, token_amount);
             balance::join<U>(&mut pool.token_balance, token_payment);
 
-            let vec_len = vector::length<OrderObject<T>>(&pool.sell_orders_list);
-            insert_sell_order_object(pool, ask_price, token_amount, vec_len, ctx);
+            // let vec_len = vector::length<OrderObject<T>>(&pool.sell_orders_list);
+            insert_sell_order_object(pool, ask_price, token_amount, ctx);
         }
 
 
@@ -170,9 +169,11 @@ module vault::deposit_core {
         // add to pool's balance.
     }
 
-    fun insert_buy_order_object<T, U>(pool: &mut Pool<T, U>, bid_price: u64, amount:u64, vec_len:u64, ctx: &mut TxContext) {
+    fun insert_buy_order_object<T, U>(pool: &mut Pool<T, U>, bid_price: u64, amount:u64, ctx: &mut TxContext) {
 
         let order_object = create_order_object(bid_price, amount, ctx);
+        let vec_len = vector::length<OrderObject<U>>(&pool.buy_orders_list);
+
         vector::push_back<OrderObject<U>>(&mut pool.buy_orders_list, order_object);
 
         if (vec_len>0){
@@ -181,7 +182,9 @@ module vault::deposit_core {
             while (second_last >= 0) {
                 if (vector::borrow<OrderObject<U>>(&pool.buy_orders_list, last).price > vector::borrow<OrderObject<U>>(&pool.buy_orders_list, second_last).price) {
                     vector::swap<OrderObject<U>>(&mut pool.buy_orders_list, last, second_last);
-                    
+                    if (second_last == 0) {
+                        break
+                    };
                     last = second_last;
                     second_last = second_last - 1;
                 }else{break}
@@ -189,17 +192,21 @@ module vault::deposit_core {
         }
     } 
 
-    fun insert_sell_order_object<T, U>(pool: &mut Pool<T, U>, ask_price: u64, amount:u64, vec_len:u64, ctx: &mut TxContext) {
+    fun insert_sell_order_object<T, U>(pool: &mut Pool<T, U>, ask_price: u64, amount:u64, ctx: &mut TxContext) {
 
         let order_object = create_order_object(ask_price, amount, ctx);
+        let vec_len = vector::length<OrderObject<T>>(&pool.sell_orders_list);
         vector::push_back<OrderObject<T>>(&mut pool.sell_orders_list, order_object);
-
         if (vec_len>0){
             let last = vec_len;
             let second_last = vec_len -1 ;
             while (second_last >= 0) {
                 if (vector::borrow<OrderObject<T>>(&pool.sell_orders_list, last).price < vector::borrow<OrderObject<T>>(&pool.sell_orders_list, second_last).price) {
                     vector::swap<OrderObject<T>>(&mut pool.sell_orders_list, last, second_last);
+
+                    if(second_last == 0 ){
+                        break
+                    };
                     
                     last = second_last;
                     second_last = second_last - 1;
