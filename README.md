@@ -25,6 +25,10 @@ e.g: `sui client call --package 0xa06de9f1fb2aa81c6ff96e3315b4b529568476c462564e
 - To see the current status of Pool
 Run `sui client object <Shared_Addr> --json`
 
+# Tests
+
+Run `sui move test`
+
 # Features
 - Working Prototype of Orderbook.
 
